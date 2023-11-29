@@ -1,64 +1,94 @@
 import discord
 from discord.ext import commands
+import os
 import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, timedelta
+
+my_secret = os.environ['TOKEN']
 
 intents = discord.Intents.default()
-intents.members = True
+intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='$', intents=intents)
 
-async def registrar_actividad(member, actividad):
-    ahora = datetime.now()
-    hora_actual = ahora.hour
+# Diccionario para almacenar las horas de conexión de los usuarios
+# {usuario_id: {'login_time': datetime, 'logout_time': datetime}}
+usuarios_horas = {}
 
-    # Añade la hora actual y el tipo de actividad al archivo de registro
-    with open('registro.txt', 'a') as file:
-        file.write(f'{member.name} {actividad} a las {hora_actual} horas\n')
 
 @bot.event
 async def on_ready():
-    print(f'Conectado como {bot.user.name}')
+  print(f'We have logged in as {bot.user}')
+
 
 @bot.event
-async def on_member_update(before, after):
-    if before.activity != after.activity:
-        actividad_anterior = before.activity.name if before.activity else "desconocida"
-        actividad_actual = after.activity.name if after.activity else "desconocida"
+async def on_message(message):
+  if message.author == bot.user:
+    return
 
-        if actividad_anterior != actividad_actual:
-            if actividad_anterior != "desconocida":
-                await registrar_actividad(after, "Logout")
-            if actividad_actual != "desconocida":
-                await registrar_actividad(after, "Login")
+  # Verificar si el mensaje es un log o logout de Auraxis Bot
+  if 'Auraxis Bot' in message.author.name and (
+      'EPLG Login' in message.content or 'EPLG Logout' in message.content):
+    await registrar_actividad_desde_mensaje(message)
 
-@bot.command(name='histograma')
-async def generar_histograma(ctx, tipo_actividad):
-    horas = []
+  await bot.process_commands(message)
 
-    # Lee el archivo de registro y extrae las horas según el tipo de actividad
-    with open('registro.txt', 'r') as file:
-        for line in file:
-            if f'{tipo_actividad} a las' in line:
-                hora = int(line.split()[-2])
-                horas.append(hora)
 
-    if not horas:
-        await ctx.send(f'No hay registros de actividad del tipo {tipo_actividad}.')
-        return
+async def registrar_actividad_desde_mensaje(message):
+  user_name = message.content.split('\n')[-1].strip()
+  user_id = hash(
+      user_name
+  )  # Hash simple para simular un ID único basado en el nombre (ajustar según tus necesidades)
+
+  ahora = datetime.now()
+
+  if 'EPLG Login' in message.content:
+    usuarios_horas[user_id] = {'login_time': ahora}
+  elif 'EPLG Logout' in message.content and user_id in usuarios_horas:
+    usuarios_horas[user_id]['logout_time'] = ahora
+    # Generar el gráfico inmediatamente después de registrar un logout
+    await generar_histograma(message.channel)
+
+
+async def generar_histograma(channel, user_name=None):
+  horas_conexion = []
+
+  for usuario_id, tiempos in usuarios_horas.items():
+    if 'login_time' in tiempos and 'logout_time' in tiempos:
+      tiempo_conexion = tiempos['logout_time'] - tiempos['login_time']
+      horas_conexion.append(tiempo_conexion.seconds // 3600)
+
+  if horas_conexion:
+    # Filtrar por nombre de usuario si se proporciona
+    if user_name:
+      horas_conexion = [
+          tiempo_conexion for usuario_id, tiempos in usuarios_horas.items()
+          if user_name.lower() in str(usuario_id).lower() for tiempo_conexion
+          in [tiempos['logout_time'] - tiempos['login_time']]
+          if 'login_time' in tiempos and 'logout_time' in tiempos
+      ]
 
     # Crea el histograma
-    plt.hist(horas, bins=24, range=(0, 24), edgecolor='black')
-    plt.title(f'Histograma de horas de {tipo_actividad}')
+    plt.hist(horas_conexion, bins=24, range=(0, 24), edgecolor='black')
+    plt.title(
+        f'Histograma de horas de conexión ({user_name if user_name else "todos"})'
+    )
     plt.xlabel('Hora del día')
-    plt.ylabel('Número de eventos')
+    plt.ylabel('Número de usuarios')
     plt.grid(True)
 
     # Guarda la imagen del histograma
     plt.savefig('histograma.png')
 
     # Envía la imagen al canal de Discord
-    await ctx.send(file=discord.File('histograma.png'))
+    await channel.send(file=discord.File('histograma.png'))
+  else:
+    await channel.send('No hay suficientes datos para generar el histograma.')
 
-# Reemplaza 'TOKEN_DEL_BOT' con el token real de tu bot
-bot.run('TOKEN_DEL_BOT')
+
+@bot.command(name='hist')
+async def generar_histograma_desde_comando(ctx, user_name=None):
+  await generar_histograma(ctx.channel, user_name)
+
+
+bot.run(my_secret)
